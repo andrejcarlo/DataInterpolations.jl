@@ -297,39 +297,77 @@ end
 
 function CubicSpline(u::uType,
         t;
-        extrapolate = false) where {uType <: AbstractVector{<:Number}}
+        extrapolate = false,
+        periodic = false) where {uType <: AbstractVector{<:Number}}
     u, t = munge_data(u, t)
     n = length(t) - 1
     h = vcat(0, map(k -> t[k + 1] - t[k], 1:(length(t) - 1)), 0)
     dl = vcat(h[2:n], zero(eltype(h)))
-    d_tmp = 2 .* (h[1:(n + 1)] .+ h[2:(n + 2)])
     du = vcat(zero(eltype(h)), h[3:(n + 1)])
-    tA = Tridiagonal(dl, d_tmp, du)
+    if !periodic
+        d_tmp = 2 .* (h[1:(n + 1)] .+ h[2:(n + 2)])
+        tA = Tridiagonal(dl, d_tmp, du)
 
-    # zero for element type of d, which we don't know yet
-    typed_zero = zero(6(u[begin + 2] - u[begin + 1]) / h[begin + 2] -
-                      6(u[begin + 1] - u[begin]) / h[begin + 1])
+        # zero for element type of d, which we don't know yet
+        typed_zero = zero(6(u[begin + 2] - u[begin + 1]) / h[begin + 2] -
+                        6(u[begin + 1] - u[begin]) / h[begin + 1])
 
-    d = map(
-        i -> i == 1 || i == n + 1 ? typed_zero :
-             6(u[i + 1] - u[i]) / h[i + 1] - 6(u[i] - u[i - 1]) / h[i],
-        1:(n + 1))
+        d = map(
+            i -> i == 1 || i == n + 1 ? typed_zero :
+                6(u[i + 1] - u[i]) / h[i + 1] - 6(u[i] - u[i - 1]) / h[i],
+            1:(n + 1))
+    else
+        # first eq and last change due to bd cond
+        d_tmp = vcat(2 * (h[2] + h[n + 1]), (2 .* (h[2:n] .+ h[3:(n + 1)])), 2 * (h[2] + h[n + 1]))
+        # Create the tridiagonal matrix as a sparse matrix
+        tA = spdiagm(-1 => dl, 0 => d_tmp, 1 => du)
+
+        # Adjust the corners for periodic boundary conditions
+        tA[1, end] = h[n + 1]
+        tA[end, 1] = h[2]
+
+        # Calculate the right-hand side vector d
+        d = zeros(eltype(u), n + 1)
+        for i in 2:n
+            d[i] = 6 * (u[i + 1] - u[i]) / h[i + 1] - 6 * (u[i] - u[i - 1]) / h[i]
+        end
+        d[1] = 6 * (u[2] - u[1]) / h[2] - 6 * (u[end] - u[end-1]) / h[end-1]
+        d[end] =  6 * (u[2] - u[1]) / h[2] - 6 * (u[end] - u[end-1]) / h[end-1]
+    end
+
     z = tA \ d
     CubicSpline(u, t, h[1:(n + 1)], z, extrapolate)
 end
 
-function CubicSpline(u::uType, t; extrapolate = false) where {uType <: AbstractVector}
+function CubicSpline(u::uType, t; extrapolate = false, periodic = false) where {uType <: AbstractVector}
     u, t = munge_data(u, t)
     n = length(t) - 1
     h = vcat(0, map(k -> t[k + 1] - t[k], 1:(length(t) - 1)), 0)
     dl = vcat(h[2:n], zero(eltype(h)))
-    d_tmp = 2 .* (h[1:(n + 1)] .+ h[2:(n + 2)])
     du = vcat(zero(eltype(h)), h[3:(n + 1)])
-    tA = Tridiagonal(dl, d_tmp, du)
-    d_ = map(
-        i -> i == 1 || i == n + 1 ? zeros(eltype(t), size(u[1])) :
-             6(u[i + 1] - u[i]) / h[i + 1] - 6(u[i] - u[i - 1]) / h[i],
-        1:(n + 1))
+
+    if !periodic
+        d_tmp = 2 .* (h[1:(n + 1)] .+ h[2:(n + 2)])
+        tA = Tridiagonal(dl, d_tmp, du)
+        d_ = map(
+            i -> i == 1 || i == n + 1 ? zeros(eltype(t), size(u[1])) :
+                6(u[i + 1] - u[i]) / h[i + 1] - 6(u[i] - u[i - 1]) / h[i],
+            1:(n + 1))
+    else
+        d_tmp = vcat(2 * (h[2] + h[n + 1]), (2 .* (h[2:n] .+ h[3:(n + 1)])), 2 * (h[2] + h[n + 1]))
+        tA = spdiagm(-1 => dl, 0 => d_tmp, 1 => du)
+
+        tA[1, end] = h[n + 1]
+        tA[end, 1] = h[2]
+
+        d = zeros(eltype(u), n + 1)
+        for i in 2:n
+            d[i] = 6 * (u[i + 1] - u[i]) / h[i + 1] - 6 * (u[i] - u[i - 1]) / h[i]
+        end
+        d[1] = 6 * (u[2] - u[1]) / h[2] - 6 * (u[end] - u[end-1]) / h[end-1]
+        d[end] =  6 * (u[2] - u[1]) / h[2] - 6 * (u[end] - u[end-1]) / h[end-1]
+    end
+    
     d = transpose(reshape(reduce(hcat, d_), :, n + 1))
     z_ = reshape(transpose(tA \ d), size(u[1])..., :)
     z = [z_s for z_s in eachslice(z_, dims = ndims(z_))]
